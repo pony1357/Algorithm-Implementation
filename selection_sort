@@ -1,0 +1,40 @@
+#include <stdio.h>
+
+void selection_sort(int* ary);
+
+int main(int argc, char* argv[]){
+  int n;
+  int* array = (int*)malloc(sizeof(int)*n);
+
+  printf("Input Size: ");
+  scanf("%d", &n);
+
+  for (int i=0; i<n; i++){
+    scanf("%d", array+i);
+  }
+
+  printf("Before Sorting..\n");
+  for (int i=0; i<n; i++){
+    printf("%d ", array[i]);
+  }
+  printf("\n");
+
+  selection_sort(array);
+
+  printf("After Sorting..\n");
+  for (int i=0; i<n; i++){
+    printf("%d ", array[i]);
+  }
+  printf("\n");
+
+void selection_sort(int* ary){
+  for (int i=0; i<n; i++){
+    int min = i;
+    for (int j=i; j<n; j++){
+      if (ary[j] < ary[min]) min = j;
+    }
+    int temp = ary[min];
+    ary[min] = ary[i];
+    ary[i] = temp;
+  }
+}
