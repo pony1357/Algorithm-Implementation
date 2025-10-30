@@ -1,0 +1,83 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+void merge(int* S, int* U, int* V, int h, int m);
+
+void merge_sort(int* S, int n);
+
+int main(int argc, char* argv[]){
+    int n;
+    printf("Input Size: ");
+    scanf("%d", &n);
+    
+    int* S = (int*)malloc(sizeof(int)*n);
+    srand(time(NULL));
+    int i;
+    for (i=0; i<n; i++){
+        S[i] = rand() % 100;
+    }
+
+    printf("Before Sorting..\n");
+    for (i=0; i<n; i++){
+            printf("%d ", S[i]);
+    }
+    printf("\n");
+
+    merge_sort(S, n);
+
+    printf("After Sorting..\n");
+    for (i=0; i<n; i++){
+        printf("%d ", S[i]);
+    }
+    printf("\n");
+
+    free(S);
+
+    return 0;
+}
+
+void merge_sort(int* S, int n){
+    if (n>1){
+        int h = n/2, m = n-h;
+        int U[h];
+        int V[m];
+
+        for (int i=0; i<h; i++){
+            U[i] = S[i];
+        }
+
+        for (int i=0; i<m; i++){
+            V[i] = S[h+1];
+        }
+
+        merge_sort(U, h);
+        merge_sort(V, m);
+        merge(S, U, V, h, m);
+    }
+}
+
+void merge(int* S, int* U, int* V, int h, int m){
+        int i=0, j=0, k=0;
+        while (i<h && j<m){
+                if (U[i] < V[j]){
+                        S[k] = U[i];
+                        i++;
+                }
+                else{
+                        S[k] = V[j];
+                        j++;
+                }
+                k++;
+        }
+        if (i>=h){
+                for (;j<m;j++){
+                        S[k++] = V[j];
+                }
+        }
+        else{
+                for (;i<h;i++){
+                        S[k++] = U[i];
+                }
+        }
+}
