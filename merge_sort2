@@ -1,0 +1,79 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+void merge_sort2(int* S, int low, int high);
+
+void merge2(int* S, int low, int mid, int high);
+
+int main(int argc, char* argv[]){
+  int n;
+  printf("Input Size: ");
+  scanf("%d", &n);
+  int* S = (int*)malloc(sizeof(int)*n);
+  srand(time(NULL));
+
+  int i;
+  for (i=0; i<n; i++){
+    S[i] = rand() % 100;
+  }
+
+  printf("Before Sorting..\n");
+  for (i=0; i<n; i++){
+    printf("%d ", S[i]);
+  }
+  printf("\n");
+
+  merge_sort2(S, 0, n-1);
+
+  printf("After Sorting..\n");
+  for (i=0; i<n; i++){
+    printf("%d ", S[i]);
+  }
+  printf("\n");
+
+  free(S);
+
+  return 0;
+}
+
+void merge_sort2(int* S, int low, int high){
+  if (low < high){
+    int mid = (low + high) / 2;
+    merge_sort2(S, low, mid);
+    merge_sort2(S, mid+1, high);
+    merge2(S, low, mid, high);
+  }
+}
+
+void merge2(int* S, int low, int mid, int high){
+  int U[high-(low-1)];
+  int i=low, j=mid+1, k=0;
+  while (i<=mid && j<=high){
+    if (S[i] < S[j]){
+      U[k] = S[i];
+      i++;
+    }
+    else{
+      U[k] = S[j];
+      j++;
+    }
+    k++;
+  }
+  if (i>mid){
+    for (; j<=high; j++){
+      U[k++] = S[j];
+    }
+  }
+  else{
+    for (; i<=mid; i++){
+      U[k++] = S[i];
+    }
+  }
+  i=low, j=0;
+  while (i<=high){
+    S[i] = U[j];
+    i++; j++;
+  }
+}
+  
