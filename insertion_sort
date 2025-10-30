@@ -37,14 +37,24 @@ int main(int argc, char* argv[]){
 
 void insertion_sort(int* ary, int n){
   for (int i=1; i<n; i++){
-		for (int j=i; j>0; j--){
-			if (ary[j-1] > ary[j]){
-				int temp = ary[j-1];
-				ary[j-1] = ary[j];
-				ary[j] = temp;
+		int item = ary[i];
+		for (int j=i-1; j>=0; j--){
+			if (ary[j] > item){
+				ary[j+1] = ary[j];
 			}
 			else break;
 		}
 	}
 }
-		
+
+/* inner loop -> while...
+for (int i=1; i<n; i++){
+	int loc = i-1;
+	int item = ary[i];
+	while (loc >= 0 && item < ary[loc]){
+		ary[loc+1] = ary[loc];
+		loc--;
+	}
+	ary[loc+1] = item;
+} */
+
