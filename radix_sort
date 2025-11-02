@@ -1,0 +1,118 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <math.h>
+
+#define MAX 100
+
+typedef struct queue{
+        int size;
+        int front, rear;
+        int q[MAX];
+}Queue;
+
+int isEmpty(Queue *p);
+
+Queue * createQueue();
+
+void destroyQueue(Queue *p);
+
+int dequeue(Queue *p);
+
+void enqueue(Queue *p, int key);
+
+
+void radix_sort(int *ary, int n, int k);
+
+int main(int argc, char* argv[]){
+        int n;
+        printf("Input Size: ");
+        scanf("%d", &n);
+
+        int k;
+        printf("Number of Digit: ");
+        scanf("%d", &k);
+
+        srand(time(NULL));
+        int *ary = (int*)malloc(sizeof(int)*n);
+
+        for (int i=0; i<n; i++){
+                ary[i] = rand() % (int)pow(10.0, (double)k);
+        }
+
+        printf("Before Sorting..\n");
+        for (int i=0; i<n; i++){
+                printf("%d ", ary[i]);
+        }
+        printf("\n\n");
+
+        radix_sort(ary, n, k);
+
+          printf("After Sorting..\n");
+        for (int i=0; i<n; i++){
+                printf("%d ", ary[i]);
+        }
+        printf("\n");
+
+        free(ary);
+
+        return 0;
+}
+
+Queue * createQueue(void){
+        Queue *p = (Queue*)malloc(sizeof(Queue));
+        p->size = 0;
+        p->front = 0;
+        p->rear = 0;
+}
+
+void destroyQueue(Queue *p){
+        free(p);
+}
+
+void enqueue(Queue *p, int key){
+        if (p->front == p->rear && !isEmpty(p))
+                printf("Queue is Full!\n");
+
+        p->q[p->rear] = key;
+        p->rear = ++(p->rear) % MAX;
+        p->size++;
+}
+
+int dequeue(Queue *p){
+        if (isEmpty(p))
+                printf("Queue is Empty!\n");
+        int i = p->front;
+        p->front = ++(p->front) % MAX;
+        p->size--;
+        return (p->q)[i];
+}
+
+int isEmpty(Queue *p){
+        return !(p->size);
+}
+
+void radix_sort(int *ary, int n, int k){
+        Queue* radixArray[10];
+        for (int i=0; i<10; i++){
+                radixArray[i] = createQueue();
+        }
+
+        for (int i=0; i<k; i++){
+                int div = (int)pow(10.0, (double)i);
+                for (int j=0; j<n; j++){
+                        enqueue(radixArray[(ary[j] / div % 10)], ary[j]);
+                }
+                int k=0;
+                for (int j=0; j<10; j++){
+                        while (!isEmpty(radixArray[j])){
+                                ary[k] = dequeue(radixArray[j]);
+                                k++;
+                        }
+                }
+        }
+
+        for (int i=0; i<10; i++){
+                destroyQueue(radixArray[i]);
+        }
+}
