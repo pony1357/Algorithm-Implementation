@@ -1,0 +1,313 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+typedef struct node{
+        int key;
+        char color;
+        struct node* left;
+        struct node* right;
+}Node;
+
+Node *NIL;
+
+void init_nil(){
+        NIL = malloc(sizeof(Node));
+        NIL->color = 'b';
+        NIL->left = NIL->right = NIL;
+}
+
+
+Node * newNode(int key, char color);
+
+
+void insert(Node *root, int key);
+
+Node * search(Node *root, int key);
+
+Node * put(Node *root, int key);
+
+int doubleRed(Node *root, Node *z);
+
+int doubleBlack(Node *root, Node *z);
+
+
+Node * restructure(Node *root, Node *z);
+
+void leftRotate(Node *x, Node *y, Node *z);
+
+void rightRotate(Node *x, Node *y, Node *z);
+
+
+Node * recolor(Node *root, Node *z);
+
+
+Node * parent(Node *root, Node *z);
+
+Node * sibling(Node *root, Node *z);
+
+int isBlack(Node *z);
+
+
+Node * findMin(Node *root);
+
+void delete(Node *root, int key);
+
+Node * findDelete(Node *root, int key);
+
+void transfer(Node *x);
+
+Node * fusion(Node *x);
+
+void adjustment(Node *x);
+
+int main(int argc, char* argv[]){
+        init_nil();
+        root = NIL;
+}
+
+Node* newNode(int key, char color){
+        Node* node = (Node*)malloc(sizeof(Node));
+        node->key = key;
+        node->color = color;
+        node->left = NIL;
+        node->right = NIL;
+        return node;
+}
+
+void insert(Node* root, int key){
+        Node *z = put(root, key);
+
+        while (doubleRed(root, z)){
+                if (isBlack(sibling(root, parent(root,z)))){
+                        restructure(root, z); // doesn't have to repeat.
+                        return;
+                }
+                else{
+                        z = recolor(root, z); // will return parent of z's parent.
+                        // what if color of the root changes?(b->r) => we can handle in recolor func
+                }
+        }
+}
+
+Node* search(Node* root, int key){
+        while (root != NIL && key != root->key){
+                if (key < root->key) root = root->left;
+                else root = root->right;
+        }
+        return root;
+}
+
+
+// return inserted node.
+Node * put(Node* root, int key){
+        if (root == NIL) return (root = newNode(key, 'b'));
+        Node *p;                                               while (root != NIL && key != root->key){
+                p = root;                                              if (key < root->key)
+                        root = root->left;
+                else
+                        root = root->right;
+        }
+
+        if (root == NIL){
+                if (key < p->key) return (p->left = newNode(key, 'r'));
+                else return (p->right = newNode(key, 'r'));
+        }
+        else return root;
+}
+
+Node * parent(Node* root, Node* z){
+        if (root == NIL || z == NIL || z == root) return NIL;
+
+        Node *p;
+        while (root != NIL && z != root){
+                p = root;
+                if (z->key < root->key)
+                        root = root->left;
+                else
+                        root = root->right;
+        }
+        return p; // even if you could not find the node z, it will return the location that exists if the node was in tree.
+}
+
+Node * sibling(Node* root, Node* z){
+        Node *p = parent(root, z);
+        if (p == NIL) return NIL;
+        else if (p->left == z) return p->right;
+        else return p->left;
+}
+
+int isBlack(Node *z){
+        return (z->color == 'b');
+}
+
+int doubleBlack(Node *z){
+        if (z == NIL) return 0;
+        return (isBlack(z->left) && isBlack(z->right));
+}
+
+
+int doubleRed(Node *root, Node *z){
+        if (z == root) return 0;
+        return (!isBlack(z) && !isBlack(parent(root, z)));
+}
+// func to find parent, sibling of parent node
+
+Node * restructure(Node *root, Node *z){
+        Node *p = parent(root, z);
+        Node *pp = parent(root, p);
+
+        if (pp->left == p){
+                if (p->left == z){
+                        rightRotate(z, p, pp);
+                        p->color = 'b';
+                        pp->color = 'r';
+                }
+                else{
+                        rightRotate(p, z, pp);
+                        leftRotate(p, z, pp);
+                        z->color = 'b';
+                        pp->color = 'r';
+                }
+        }
+        else{
+                if (p->right == z){
+                        leftRotate(pp, p, z);
+                        pp->color = 'r';
+                        p->color = 'b';
+                }
+                else{
+                        leftRotate(pp, z, p);
+                        RightRotate(pp, z, p);
+                        pp->color = 'r';
+                        z->color = 'b';
+                }
+        }
+        return z;
+}
+
+void leftRotate(Node *x, Node *y, Node *z){
+        Node *n = parent(x);
+        if (n->left == x) n->left = y;
+        else n->right = y;
+
+        x->right = y->left;
+        y->left = x;
+}
+
+void rightRotate(Node *x, Node *y, Node *z){
+        Node *n = parent(z);
+        if (n->left == z) n->left = y;
+        else n->right = y;
+
+        z->left = y->right;
+        y->right = z;
+}
+
+Node * recolor(Node *root, Node *z){
+        Node *p = parent(root, z);
+        Node *s = sibling(root, p);
+        Node *pp = parent(root, p);
+
+        p->color = 'b';
+        s->color = 'b';
+        if (root != pp) pp->color = 'r'; // root must be black.
+}
+
+void delete(Node *root, int key){
+        // find actual deleted node (if the removed node has two child, find the successor)
+        Node *v = *t = findDelete(root, key);
+
+        // doubleBlack check
+        if (!doubleBlack(root, v)){ // case: 0
+                if (!isBlack(v)) v->color = 'b';
+        }
+        else{
+                do{
+                        Node *x = parent(root, v);
+                        Node *y = sibling(root, v);
+                        if (v == root) break;
+                        int doubleBlack = 0;
+
+                        if (!isBlack(y)){       // case 3: sibling is red -> change into case 1, case 2
+                                adjustment(x);
+                                y = sibling(root, v);
+                        }
+                                                                               if ( isBlack(y->left) && isBlack(y->right) ){ // case: 2, all of the child of sibling is black
+                                // parent x -> red.. fusion(recolor)! x->black y->red
+                                if (isBlack(x)) doubleBlack = 1;
+                                v = fusion(x, y);                              }
+                        else{ // case: 1, at least one child of sibling is red
+                                transfer(root, y);
+                        }
+                }while (doubleBlack);
+        }
+        if (t == root) return;
+
+        if (parent(t)->left == t){
+                if (t->left != NIL)
+                        parent(t)->left = t->left;
+                else
+                        parent(t)->left = t->right;
+        }
+        else{
+                if (t->left != NIL)
+                        parent(t)->right = t->left;
+                else
+                        parent(t)->right = t->right;
+        }
+        free(t);
+}
+
+void transfer(Node *x){
+        Node *y = x->left;
+        if (!isBlack(y->left)){
+                Node *z = y->left;
+                rightRotate(z, y, x);
+                z->color = 'b';
+                y->color = x->color;
+                x->color = 'b';
+        }
+        else{
+                Node *z = y->right;
+                rightRotate(y, z, x);
+                leftRotate(y, z, x);
+                z->color = x->color;
+                x->color = 'b';
+        }
+}
+
+Node * fusion(Node *x){
+        (x->left)->color = 'r';
+        x->color = 'b';
+        return x;
+}
+
+void adjustment(Node *x){
+        Node *y = x->left;
+        Node *z = y->left;
+        rightRotate(z, y, x);
+        y->color = 'b';
+        x->color = 'r';
+}
+
+
+Node * findMin(Node* root){
+        while (root->left != NIL)
+                root = root->left;
+        return root;
+}
+
+Node * findDelete(Node *root, int key){ // must return removed node.
+        if (root == NIL) return NIL; // tree does not exist.
+        while (root != NIL && key != root->key){
+                if (key < root->key) root = root->left;                else if (key > root->key) root = root->right;
+        }
+        if (root == NIL) return NIL; // tree does not have the key.
+
+        if (root->left != NIL && root->right != NIL){ // when you found the key.
+                Node *n = findMin(root->right);                        root->key = n->key;
+                return n;
+        }
+        return root;
+}
