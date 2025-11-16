@@ -1,0 +1,250 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+typedef struct Node{
+	int key;
+	char color;
+	struct Node *left, *right, *parent;
+}Node;
+
+Node *NIL;
+
+
+// first. insert / second. search / third. adjustment
+
+void init_nil();
+
+Node * newNode(int key, char color, Node *parent);
+
+int isBlack(Node *root);
+
+int doubleRed(Node *root);
+
+int doubleBlack(Node *root);
+
+Node * sibling(Node *root);
+
+
+
+Node * search(Node *root, int key);
+
+
+
+Node * insert(Node *root, int key); // can implement insert func using recursive.
+
+void restructure(Node **root, Node *z);
+
+void leftRotate(Node **root, Node *x);
+
+void rightRotate(Node **root, Node *x);
+
+Node * recolor(Node *z); // return new z(need to check double red again);
+
+void inorder(Node *root);
+
+// Node * delete(Node *root, int key);
+
+
+
+int main(int argc, char* argv[]){
+	init_nil();
+	Node *root = NIL;
+	do{
+		int temp;
+		printf("1: INSERT   2: DELETE   3: PRINT(INORDER)   4: QUIT\n");
+		printf("Enter > ");
+		scanf("%d", &temp);
+		
+		if (temp == 4){
+			break;
+		}
+		else if (temp == 1){
+			int key;
+			printf("Enter Key Number(INT) > ");
+			scanf("%d", &key);
+
+			root = insert(root, key);
+		}
+		else if (temp == 2){
+		}
+		else if (temp == 3){
+			inorder(root);
+			printf("\n");
+		}
+	}while (1);
+	return 0;
+}
+
+void init_nil(){
+	NIL = (Node*)malloc(sizeof(Node));
+	NIL->color = 'b';
+	NIL->left = NIL->right = NIL->parent = NIL;
+}
+
+Node * newNode(int key, char color, Node *parent){
+	Node *node = (Node*)malloc(sizeof(Node));
+	node->left = node->right = NIL;
+	node->parent = parent;
+	node->key = key;
+	node->color = color;
+	return node;
+}
+
+int isBlack(Node *root){
+	return (root->color == 'b');
+}
+
+int doubleRed(Node *root){
+	return (!isBlack(root) && !isBlack(root->parent));
+}
+
+Node * sibling(Node *root){
+	if (root->parent->left == root)
+		return root->parent->right;
+	else
+		return root->parent->left; // include the case that parent is null = sibling's null too.
+}
+
+Node * search(Node *root, int key){
+	while (root != NIL && key != root->key){
+		if (key < root->key) root = root->left;
+		else if (key > root->key) root = root->right;
+	}
+	return root; // can't find or root is nil -> NIL, find -> Node *
+}
+
+Node * insert(Node *root, int key){ // first. insert new node.
+	if (root == NIL)
+		return newNode(key, 'b', NIL);  // the root is NIL.
+	
+	Node *p = NIL, *t = root;
+	while (t != NIL && key != t->key){
+		p = t;
+		if (key < t->key) t = t->left;
+		else if (key > t->key) t = t->right;
+	}
+	if (t != NIL) return root; // the key already exists.
+
+	Node *n = newNode(key, 'r', p);
+	if (key < p->key)
+		p->left = n;
+	else
+		p->right = n;
+	
+	// second. adjust double red	
+	while (doubleRed(n)){
+		Node *uncle = sibling(n->parent);
+		if (isBlack(uncle)){
+			//  restructure
+			restructure(&root, n);
+			return root;
+		}
+		else{
+			n = recolor(n);
+		}
+	}
+	return root;
+}
+
+void restructure(Node **root, Node *z){
+	Node *p = z->parent;
+	Node *gp = p->parent;
+	if (gp->left == p){
+		if (p->left == z){
+			// LL
+			rightRotate(root, gp);
+			p->color = 'b';
+			gp->color = 'r';
+		}
+		else{
+			leftRotate(root, p);
+			rightRotate(root, gp);
+			z->color = 'b';
+			gp->color = 'r';
+		}
+	}
+	else{
+		if (p->right == z){
+			// RR
+			leftRotate(root, gp);
+			p->color = 'b';
+			gp->color = 'r';
+		}
+		else{
+			// RL
+			rightRotate(root, p);
+			leftRotate(root, gp);
+			z->color = 'b';
+			gp->color = 'r';
+		}
+	}
+}
+
+void leftRotate(Node **root, Node *x){
+	Node *y = x->right;
+  x->right = y->left;
+  if (y->left != NIL) y->left->parent = x;
+
+  y->parent = x->parent;
+  if (x->parent == NIL)
+      *root = y;
+  else if (x == x->parent->left)
+      x->parent->left = y;
+  else
+      x->parent->right = y;
+
+  y->left = x;
+  x->parent = y;
+}
+
+void rightRotate(Node **root, Node *x){
+	Node *y = x->left;
+  x->left = y->right;
+  if (y->right != NIL) y->right->parent = x;
+
+  y->parent = x->parent;
+  if (x->parent == NIL)
+      *root = y;
+  else if (x == x->parent->left)
+      x->parent->left = y;
+  else
+      x->parent->right = y;
+
+  y->right = x;
+  x->parent = y;
+}
+
+Node * recolor(Node *z){
+	z->parent->color = sibling(z->parent)->color = 'b';
+	if (z->parent->parent->parent != NIL) z->parent->parent->color = 'r';
+	return z->parent->parent;
+}
+
+/* Node * delete(Node *root, int key){
+	// delete node check -> double black check -> delete -> adjustment
+	Node *t = root;
+	while (t != NIL && key != t->key){
+		if (key < t->key) t = t->left;
+		else if (key > t->key) t = t->right;
+	}
+	if (t == NIL) return root;
+
+	if (t->left != NIL && t->right != NIL){
+		Node *node = findMin(t->right);
+		t->key = node->key;
+	}
+
+
+
+}
+*/ // To test insert func...
+
+void inorder(Node *root){
+	if (root == NIL) return;
+	if (root->left != NIL) inorder(root->left);
+	
+	if (root->color == 'b') printf("%db ", root->key);
+	else printf("%dr ", root->key);
+	if (root->right != NIL) inorder(root->right);
+}
