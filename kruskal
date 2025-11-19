@@ -1,0 +1,186 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef int set_pointer;
+
+typedef struct Node{
+  int parent;
+  int depth;
+} Node;
+
+Node *U;
+
+void makeset(int i);
+
+void initial(int n);
+
+set_pointer find(int i);
+
+void merge(set_pointer p, set_pointer q);
+
+int equal(set_pointer p, set_pointer q);
+
+
+
+
+typedef struct Edge{
+  int v;
+  int w;
+  int weight;
+}Edge;
+
+void kruskal(int n, int m, Edge *E, Edge *F);
+
+int compare(const void *a, const void *b);
+
+
+
+
+void mergesort(int low, int high, Edge *E); // If the array is stable, we can expect the selected edge(at the same weight)
+void mge(int low, int mid, int high, Edge *E);
+
+
+
+
+int main(int argc, char *argv[]){
+  int n, m;
+  printf("Number of Vertices > ");
+  scanf("%d", &n);
+
+  printf("Number of Edges > ");
+  scanf("%d", &m);
+
+  Edge *E = (Edge*)malloc(sizeof(Edge)*m);
+  Edge *F = (Edge*)malloc(sizeof(Edge)*(n-1));
+  
+
+  for (int i=0; i<m; i++){
+    printf("Enter \"the Adjacent Vertex v\" of the Edge %d > ", i+1);
+    scanf("%d", &(E[i].v));
+    printf("Enter \"the Adjacent Vertex w\" of the Edge %d > ", i+1);
+    scanf("%d", &(E[i].w));
+    printf("Enter \"the Weight\" of the Edge %d > ", i+1);
+    scanf("%d", &(E[i].weight));
+  }
+  kruskal(n, m, E, F);
+
+  for (int i=0; i<n-1; i++){
+    printf("Edge: ( %d, %d )   Weight: %d\n", F[i].v, F[i].w, F[i].weight);
+  }
+  
+  free(E);
+  free(F);
+  return 0;
+}
+
+void makeset(int i){
+   U[i].parent = i;
+   U[i].depth = 0;
+}
+
+void initial(int n){
+  U = (Node *)malloc(sizeof(Node)*(n+1));
+  for (int i=1; i<=n; i++) makeset(i);
+
+}
+
+set_pointer find(int i){
+  while (U[i].parent != i) i = U[i].parent;
+  return i;
+}
+
+void merge(set_pointer p, set_pointer q){
+  if (U[p].depth == U[q].depth){
+    U[p].depth++;
+    U[q].parent = p;
+  }
+  else if (U[p].depth < U[q].depth) U[p].parent = q;
+  else U[q].parent = p;
+}
+
+int equal(set_pointer p, set_pointer q){
+  return (p == q);
+}
+
+
+void kruskal(int n, int m, Edge *E, Edge *F){
+  int i, j;
+  set_pointer p, q;
+  Edge e;
+  Edge* pary = E;
+
+  mergesort(0, m-1, E);
+  int cntF = 0;
+  initial(n);
+
+  while (cntF < n-1){
+    e = *pary;
+    i = e.v; j = e.w;
+
+    p=find(i);
+    q=find(j);
+
+    if (!equal(p,q)){
+      merge(p, q);
+      F[cntF] = e;
+      cntF++;
+    }
+    pary++;
+  }
+  free(U);
+}
+
+int compare(const void *a, const void *b){
+  return ((const Edge*)a)->weight - ((const Edge*)b)->weight;
+}
+
+
+
+
+void mergesort(int low, int high, Edge *E){
+  int mid;
+  if (low < high){
+    mid = (low + high) / 2;
+    mergesort(low, mid, E);
+    mergesort(mid+1, high, E);
+    mge(low, mid, high, E);
+  }
+}
+
+void mge(int low, int mid, int high, Edge *E){
+  int size = high - low + 1;
+  Edge *temp = (Edge*)malloc(sizeof(Edge)*size);
+
+  int i=low, j=mid+1, k=0;
+  while (i<=mid && j<=high){
+    if (E[i].weight <= E[j].weight){
+      temp[k] = E[i];
+      i++;
+    }
+    else{
+      temp[k] = E[j];
+      j++;
+    }
+    k++;
+  }
+  if (i > mid){
+    while (j <= high){
+      temp[k] = E[j];
+      j++;
+      k++;
+    }
+  }
+  else{
+    while (i <= mid){
+      temp[k] = E[i];
+      i++;
+      k++;
+    }
+  }
+
+  for (i=low; i<=high; i++){
+    E[i] = temp[i-low];
+  }
+
+  free(temp);
+}
