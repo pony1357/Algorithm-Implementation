@@ -1,0 +1,70 @@
+#include <stdio.h>
+#include <stdlib.h>
+#define INF 2147483647
+
+int minmult(int n, const int *d, int **P);
+
+void order(int i, int j, int **P);
+
+int main(int argc, char *argv[]){
+  int n;
+  printf("Enter the number of matrices > ");
+  scanf("%d", &n);
+
+  int *d = (int*)malloc(sizeof(int)*(n+1));
+  for (int i=0; i<n+1; i++){
+    printf("Enter the d%d > ", i);
+    scanf("%d", &d[i]);
+  }
+  
+  int **P = (int**)malloc(sizeof(int*)*(n+1));
+  for (int i=0; i<n+1; i++){
+    P[i] = (int*)malloc(sizeof(int)*(n+1));
+  }
+  printf("The number of Mimimum Multiplication > %d\n", minmult(n, (const int*)d, P));
+
+  printf("The optimal order > \n");
+  order(1, n, P);
+  printf("\n");
+
+  free(d);
+  for (int i=0; i<n+1; i++){
+    free(P[i]);
+  }
+  free(P);
+  return 0;
+}
+
+int minmult(int n, const int *d, int **P){
+  int i, j, k, diagonal;
+  int M[n+1][n+1];
+
+  for (int i=1; i<=n; i++){
+    M[i][i] = 0;
+  }
+
+  for (diagonal=1; diagonal <=n-1; diagonal++){
+    for (int i=1; i<=n-diagonal; i++){
+      j = i+diagonal;
+      M[i][j] = INF;
+      for (k=i; k<j; k++){
+        if (M[i][j] > M[i][k] + M[k+1][j] + d[i-1] * d[k] * d[j]){
+          M[i][j] = M[i][k] + M[k+1][j] + d[i-1] * d[k] * d[j];
+          P[i][j] = k;
+        }
+      }
+    }
+  }
+  return M[1][n];
+}
+
+void order(int i, int j, int **P){
+  if (i==j) printf("A%d",i);
+  else{
+    int k=P[i][j];
+    printf("(");
+    order(i, k, P);
+    order(k+1, j, P);
+    printf(")");
+  }
+}
