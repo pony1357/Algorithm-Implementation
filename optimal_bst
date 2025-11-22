@@ -1,0 +1,91 @@
+#include <stdio.h>
+#include <stdlib.h>
+#define INF 2147483647
+
+typedef struct Node{
+  int key;
+  struct Node *left, *right;
+}Node;
+
+void search(Node *root, int keyin, Node **p);
+
+void optsearchtree(int n, const float *p, float *minavg, int **R);
+
+void printTree(int i, int j, int **R);
+
+int main(int argc, char* argv[]){
+  int n;
+  printf("Enter the number of the key > ");
+  scanf("%d", &n);
+
+  float *p = (float*)malloc(sizeof(float)*(n+1));
+  for (int i=1; i<=n; i++){
+    printf("Enter the probability of the key %d > ", i);
+    scanf("%f", &p[i]);
+  }
+
+  int **R = (int**)malloc(sizeof(int*)*(n+2));
+  for (int i=0; i<n+2; i++){
+    R[i] = (int*)malloc(sizeof(int)*(n+1));
+  }
+  float minavg;
+
+  optsearchtree(n, (const float *)p, &minavg, R);
+
+  printf("The optimal search time is %2f\n", minavg);
+  
+  printTree(1, n, R);
+  return 0;
+}
+
+void search(Node *root, int keyin, Node **p){
+  int found = 0;
+  *p = root;
+  while (!found){
+    if ((*p)->key == keyin)
+      found = 1;
+    else if (keyin < (*p)->key)
+      *p = (*p)->left;
+    else
+      *p = (*p)->right;
+  }
+}
+
+void optsearchtree(int n, const float *p, float *minavg, int **R){
+  int i, j, k, diagonal;
+  float A[n+2][n+1];
+  for (i=1; i<=n; i++){
+    A[i][i-1] = 0;
+    A[i][i] = p[i];
+    R[i][i] = i; 
+    R[i][i-1] = 0;
+  }
+  A[n+1][n] = 0;
+  R[n+1][n] = 0;
+
+  for (diagonal=1; diagonal<=n-1; diagonal++){
+    for (i=1; i<=n-diagonal; i++){
+      j = i+diagonal;
+      A[i][j] = INF;
+      float prob = 0;
+      for (k=i; k<=j; k++){
+        if (A[i][j] > A[i][k-1] + A[k+1][j]){
+          A[i][j] = A[i][k-1] + A[k+1][j];
+          R[i][j] = k;
+        }
+        prob += p[k];
+      }
+      A[i][j] += prob;
+    }
+  }
+  *minavg = A[1][n];
+}
+
+void printTree(int i, int j, int **R){
+  if (R[i][j] == 0) return;
+  else{
+    printf("R[%d][%d]: %d\n", i, j, R[i][j]);
+    printTree(i, R[i][j]-1, R);
+    printTree(R[i][j]+1, j, R);
+  }
+}
