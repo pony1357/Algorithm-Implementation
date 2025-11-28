@@ -1,0 +1,84 @@
+#include <stdio.h>
+#include <stdlib.h>
+#define INF 2147483647
+
+typedef struct Edge{
+  int v;
+  int w;
+  int weight;
+}Edge;
+
+void prim(int n, const int **W, Edge *F);
+
+int main(int argc, char* argv[]){
+  int n;
+  printf("<<  Prim Algorithm  >>\n");
+  printf("Number of the Vertex > ");
+  scanf("%d", &n);
+  int i, j;
+  int **W = (int**)malloc(sizeof(int*)*n);
+  for (i=0; i<n; i++){
+    W[i] = (int*)malloc(sizeof(int)*n);
+  }
+
+  for (i=0; i<n; i++){
+    W[i][i] = 0;
+    for (j=i+1; j<n; j++){
+      printf("Weight of the edge from V%d to V%d > ", i+1, j+1);
+      scanf("%d", &W[i][j]);
+      if (W[i][j] == -1) W[i][j] = INF;
+      W[j][i] = W[i][j];
+    }
+  }
+
+  Edge *F = (Edge*)malloc(sizeof(Edge)*(n-1));
+
+  prim(n ,(const int**)W, F);
+
+  for (i=0; i<n-1; i++){
+    printf("Edge %d: v%d --( %d )--> v%d\n", i+1, F[i].v, F[i].weight, F[i].w);
+  }
+
+  free(F);
+  for (i=0; i<n; i++){
+    free(W[i]);
+  }
+  free(W);
+  return 0;
+}
+
+void prim(int n, const int **W, Edge *F){
+  int i, vnear, min;
+  Edge e;
+  int nearest[n+1], distance[n+1];
+
+  for (i=2; i<=n; i++){
+    nearest[i] = 1;
+    distance[i] = W[1-1][i-1];
+  }
+
+  int cnt=0;
+  while (cnt < n-1){
+    min = INF;
+    for (i=2; i<=n; i++){
+      if (distance[i] >= 0 && distance[i] <= min){
+        min = distance[i];
+        vnear = i;
+      }
+    }
+
+    e.w = vnear;
+    e.v = nearest[vnear];
+    e.weight = distance[vnear];
+    F[cnt] = e;
+    distance[vnear] = -1;
+
+    for (i=2; i<=n; i++){
+      if (W[i-1][vnear-1] < distance[i]){
+        distance[i] = W[i-1][vnear-1];
+        nearest[i] = vnear;
+      }
+    }
+    cnt++;
+  }
+}
