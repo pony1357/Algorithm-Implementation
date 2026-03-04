@@ -1,0 +1,495 @@
+/*
+ * ============================================================================
+ * counter.c — Space-Saving 알고리즘 기반 Per-WL 카운터 (REC) 구현
+ * ============================================================================
+ *
+ * STRAW 논문 [ASPLOS'26] §6의 "Resource-Efficient Counters (REC)" 구현.
+ *
+ * Space-Saving 알고리즘 [Metwally et al., ICDT'05]을 Linux 커널 환경에서
+ * 구현한 것으로, 제한된 수의 카운터(K개)로 데이터 스트림 내 원소의
+ * 빈도를 근사 추적한다.
+ *
+ * ===== Space-Saving 알고리즘 개요 =====
+ *
+ * 목표: 길이 N인 데이터 스트림에서, K개의 카운터만으로
+ *       각 원소의 출현 빈도를 근사 추정한다.
+ *
+ * 자료구조:
+ *   - K개의 (원소, 빈도) 쌍을 유지
+ *   - 빈도 기준 오름차순 정렬 리스트 (priority_queue)
+ *   - 원소 기준 해시 테이블 (counter) — O(1) 검색
+ *
+ * 핵심 연산 (add):
+ *   1) 이미 추적 중인 원소가 들어오면 → 빈도++
+ *   2) 새로운 원소가 들어왔는데:
+ *      a) 빈 카운터가 있으면 → 빈 카운터에 (원소, 1)로 등록
+ *      b) 빈 카운터가 없으면 → 최소 빈도 카운터를 새 원소로 교체
+ *         새 빈도 = 기존 최소 빈도 + 1 (과대추정 발생 가능)
+ *
+ * 핵심 성질:
+ *   - 어떤 원소 x에 대해, get(x) ≥ 실제 빈도(x) (과소추정 없음)
+ *   - 추적되지 않는 원소의 실제 빈도 ≤ 현재 최소 빈도
+ *   - hot item (빈도가 높은 원소)은 높은 확률로 정확하게 추적됨
+ *
+ * STRAW에서의 의미 (논문 §6.1):
+ *   "Due to the limited number of counters, the estimated read counts
+ *    by REC may introduce some error, but SS ensures that the estimated
+ *    count value for any element is never underestimated. This guarantees
+ *    that errors in estimation do not result in read-disturbance-induced
+ *    data corruption, although they may cause premature RR invocations."
+ *
+ * ===== 구현 세부사항 =====
+ *
+ * Linux 커널 자료구조 활용:
+ *   - DECLARE_HASHTABLE / hash_add / hash_for_each_possible: 해시 테이블
+ *   - struct list_head / list_add / list_move 등: 이중 연결 리스트
+ *   - vmalloc/vfree: 커널 메모리 할당 (대용량, 연속 가상 주소)
+ *
+ * item의 생명주기:
+ *   [생성] createSpaceSaving() → pool에 K개 item 생성
+ *   [사용] add() → pool에서 꺼내 priority_queue로 이동, hash에 등록
+ *   [교체] add() (pool 비었을 때) → priority_queue의 min item을 재사용
+ *   [무효화] invalidate() → 빈도를 최소로 리셋 (priority_queue head로 이동)
+ *   [리셋] reset() → 모든 item을 priority_queue에서 pool로 이동
+ *   [해제] freeSpaceSaving() → 모든 item vfree
+ *
+ * ============================================================================
+ */
+
+#include "counter.h"
+
+/*
+ * createSpaceSaving: Space-Saving 인스턴스를 생성하고 K개의 카운터를 초기화.
+ *
+ * @size: 카운터 개수 (K). conv_ftl.c의 init_wordlines()에서 NUM_SS로 전달됨.
+ *        → 논문 §7.2 Figure 19: 기본값 32 (704-WL 블록 기준)
+ *        → K가 클수록 정확도 ↑, 메모리 사용량 ↑
+ *        → K가 작을수록 과대추정 빈도 ↑, premature RR ↑
+ *
+ * 반환: 초기화된 SpaceSaving 포인터.
+ *
+ * 초기 상태:
+ *   - counter (해시 테이블): 빈 상태
+ *   - pool: K개의 item이 모두 여기에 위치 (모두 미사용 상태)
+ *   - priority_queue: 빈 상태 (아직 추적 중인 WL 없음)
+ *
+ *   pool:            [item0] ↔ [item1] ↔ ... ↔ [itemK-1]
+ *   priority_queue:  (비어 있음)
+ *   hash table:      (비어 있음)
+ */
+SpaceSaving* createSpaceSaving(int size) {
+	SpaceSaving *ss = (SpaceSaving *)vmalloc(sizeof(SpaceSaving));
+	int i;
+
+	hash_init(ss->counter);               /* 해시 테이블 모든 버킷을 빈 상태로 초기화 */
+	INIT_LIST_HEAD(&ss->pool);             /* 미사용 item 풀 리스트 초기화 */
+	INIT_LIST_HEAD(&ss->priority_queue);   /* 빈도 정렬 리스트 초기화 */
+
+	/* K개의 item을 생성하여 pool에 추가 */
+	for (i = 0; i < size; i++) {
+		struct item *item = (struct item*)vmalloc(sizeof(struct item));
+		item->num = 0;         /* WL 인덱스 (아직 미할당) */
+		item->frequency = 0;   /* 빈도 (아직 미사용) */
+		list_add(&item->entry, &ss->pool);  /* pool 리스트에 추가 */
+	}
+
+	return ss;
+}
+
+/*
+ * update_pq: item의 빈도가 증가한 후, priority_queue 내에서
+ *            올바른 위치로 이동시켜 오름차순 정렬을 유지한다.
+ *
+ * @ss:   SpaceSaving 인스턴스
+ * @item: 빈도가 변경된 item
+ *
+ * priority_queue는 frequency 오름차순으로 정렬되어 있다:
+ *   head → [freq=3] ↔ [freq=5] ↔ [freq=12] ↔ [freq=20] ← tail
+ *
+ * item의 frequency가 증가하면, 현재 위치보다 뒤쪽(높은 frequency 방향)으로
+ * 이동해야 할 수 있다. 이 함수는 item의 현재 위치부터 tail 방향으로 순회하며,
+ * item.frequency ≤ comp_item.frequency인 위치를 찾아 그 앞에 삽입한다.
+ *
+ * 예시: item(freq=7)이 증가하여 freq=8이 된 경우
+ *   Before: [3] ↔ [5] ↔ [*7→8*] ↔ [12] ↔ [20]
+ *   순회: 12 > 8 → [12] 앞에 삽입
+ *   After:  [3] ↔ [5] ↔ [8] ↔ [12] ↔ [20]  (이 경우 이동 불필요)
+ *
+ *   Before: [3] ↔ [*5→13*] ↔ [8] ↔ [12] ↔ [20]
+ *   순회: 8 < 13 → skip, 12 < 13 → skip, 20 > 13 → [20] 앞에 삽입
+ *   After:  [3] ↔ [8] ↔ [12] ↔ [13] ↔ [20]
+ *
+ * 시간복잡도: O(K) 최악, 보통 O(1)~O(수 개) (빈도가 조금만 증가하므로)
+ */
+void update_pq(SpaceSaving *ss, struct item *item) {
+	struct item *comp_item = item;
+
+	/*
+	 * list_for_each_entry_continue: item의 *다음* 원소부터 순회 시작.
+	 * (item 자기 자신은 건너뛰고, item 뒤의 원소들만 비교)
+	 *
+	 * 순회하면서 item.frequency ≤ comp_item.frequency인 위치를 찾는다.
+	 * 찾으면 comp_item 바로 앞에 item을 이동시킨다.
+	 */
+	list_for_each_entry_continue(comp_item, &ss->priority_queue, entry) {
+		if (item->frequency <= comp_item->frequency) {
+			/*
+			 * item의 frequency가 comp_item 이하 → comp_item 바로 앞이 올바른 위치.
+			 * tmp_item = comp_item의 바로 앞 원소.
+			 * item이 이미 올바른 위치에 있으면 (item == tmp_item) 이동 불필요.
+			 */
+			struct item *tmp_item = list_prev_entry(comp_item, entry);
+			if (item != tmp_item)
+				list_move(&item->entry, &tmp_item->entry);
+			return;
+		}
+	}
+
+	/*
+	 * 루프를 끝까지 돌았다면, item의 frequency가 priority_queue에서 가장 크다.
+	 * → 리스트 맨 뒤(tail)로 이동.
+	 */
+	if (list_is_last(&item->entry, &ss->priority_queue) == false)
+		list_move_tail(&item->entry, &ss->priority_queue);
+}
+
+/*
+ * add: 데이터 스트림에 새 원소(WL 읽기 이벤트)를 추가한다.
+ *
+ * @ss:  대상 블록의 SpaceSaving 인스턴스
+ * @num: 읽은 WL의 인덱스 (oneshotpg 번호)
+ *
+ * conv_ftl.c의 check_rr()에서 매 읽기마다 호출된다:
+ *   add(bwl->counter, target_ppa->g.pg / spp->pgs_per_oneshotpg);
+ *
+ * ===== Space-Saving 알고리즘의 핵심 연산 =====
+ *
+ * Case 1: num이 이미 추적 중인 경우 (해시 테이블에서 발견)
+ *   → frequency를 1 증가시키고, priority_queue 내 위치를 업데이트.
+ *   → 이 경우 추정 빈도 = 실제 빈도 (정확함)
+ *
+ * Case 2: num이 새로운 WL이고, pool에 미사용 item이 있는 경우
+ *   → pool에서 item을 하나 꺼내와서 (num, frequency=1)로 초기화.
+ *   → 해시 테이블에 등록하고 priority_queue의 head(최소 위치)에 삽입.
+ *   → 이 경우도 추정 빈도 = 실제 빈도 (정확함)
+ *
+ * Case 3: num이 새로운 WL이고, pool이 비어있는 경우 (모든 K개 카운터 사용 중)
+ *   → priority_queue의 head에서 최소 빈도 item을 가져옴.
+ *   → 해당 item의 원소를 num으로 교체하고 frequency를 1 증가.
+ *   → 기존에 추적하던 원소는 이제 추적되지 않음 (eviction).
+ *
+ *   *** 이것이 과대추정이 발생하는 유일한 경우 ***
+ *   예) 최소 빈도 item이 (WL5, freq=10)이고, 새로 WL99가 들어오면:
+ *       → (WL99, freq=11)로 교체됨.
+ *       → WL99의 실제 빈도는 1이지만, 추정 빈도는 11이 됨.
+ *       → 과대추정이지만, WL99의 실제 빈도(1) ≤ 추정 빈도(11) → 안전.
+ *
+ *   *** WL5의 추적은 중단됨 ***
+ *   → 이후 get(WL5)를 호출하면 해시에서 못 찾아 최소 빈도를 반환.
+ *   → 최소 빈도 ≥ WL5의 실제 빈도이므로 → 과소추정 없음, 안전.
+ */
+void add(SpaceSaving *ss, int num) {
+	struct item *item;
+
+	/*
+	 * Case 1: 이미 추적 중인 WL인지 해시 테이블에서 검색.
+	 * hash_for_each_possible: num을 해시 키로 하여 해당 버킷의
+	 * 모든 item을 순회. 동일한 num을 가진 item을 찾으면 빈도 증가.
+	 */
+	hash_for_each_possible(ss->counter, item, hnode, num) {
+		if (item->num == num) {
+			item->frequency++;          /* 빈도 1 증가 */
+			update_pq(ss, item);        /* 정렬 위치 업데이트 */
+			return;
+		}
+	}
+
+	/*
+	 * Case 2: 새로운 WL이고 pool에 여유가 있는 경우.
+	 * pool에서 첫 번째 item을 가져와 새 WL로 초기화.
+	 */
+	if (list_empty(&ss->pool) == false) {
+		item = list_first_entry(&ss->pool, struct item, entry);
+		item->num = num;          /* WL 인덱스 설정 */
+		item->frequency = 1;      /* 첫 번째 읽기이므로 빈도 = 1 */
+
+		/* 해시 테이블에 등록 (num을 key로) */
+		hash_add(ss->counter, &item->hnode, item->num);
+
+		/*
+		 * priority_queue의 head(앞쪽)에 삽입.
+		 * frequency=1은 가장 작은 빈도이므로 head가 올바른 위치.
+		 * list_move: pool에서 제거하고 priority_queue head로 이동.
+		 */
+		list_move(&item->entry, &ss->priority_queue);
+	} else {
+		/*
+		 * Case 3: 새로운 WL이고 pool이 비어있는 경우 (카운터 포화).
+		 * Space-Saving 알고리즘의 핵심 — 최소 빈도 item을 교체.
+		 *
+		 * priority_queue의 head = 현재 최소 빈도 item.
+		 * 이 item을 새 WL(num)로 교체하고 frequency를 1 증가.
+		 *
+		 * 예) head = (WL5, freq=10)이고, 새로 WL99가 add되면:
+		 *     → hash에서 WL5 삭제
+		 *     → item을 (WL99, freq=11)로 변경
+		 *     → hash에 WL99 등록
+		 *     → priority_queue에서 올바른 위치로 이동
+		 *
+		 * frequency를 (기존 최소값 + 1)로 설정하는 이유:
+		 *   - 기존 최소값 = 이 카운터가 그동안 추적하던 원소의 추정 빈도
+		 *   - 새 원소의 실제 빈도는 1이지만, 기존 추정값을 물려받음
+		 *   - 이것이 Space-Saving의 과대추정 메커니즘
+		 *   - 반대로 말하면, 기존에 evict된 원소의 실제 빈도 ≤ 기존 최소값
+		 *     이므로 과소추정은 발생하지 않음
+		 */
+		item = list_first_entry(&ss->priority_queue, struct item, entry);
+
+		/* 기존 원소를 해시 테이블에서 제거 (더 이상 추적하지 않음) */
+		hash_del(&item->hnode);
+
+		/* 새 원소로 교체: num 변경, frequency는 기존값 + 1 */
+		item->num = num;
+		item->frequency++;  /* 기존 최소 빈도 + 1 (과대추정 발생 지점!) */
+
+		/* 해시 테이블에 새 원소 등록 */
+		hash_add(ss->counter, &item->hnode, item->num);
+
+		/* 빈도가 증가했으므로 priority_queue 내 위치 업데이트 */
+		update_pq(ss, item);
+	}
+}
+
+/*
+ * get: WL의 추정 read count를 반환한다.
+ *
+ * @ss:  대상 블록의 SpaceSaving 인스턴스
+ * @num: 조회할 WL 인덱스
+ *
+ * conv_ftl.c의 should_reclaim_wl_*() 함수에서 호출된다:
+ *   - get(bwl->counter, oneshotpg):     현재 WL의 추정 RC 조회
+ *   - get(bwl->counter, oneshotpg ± 1): 인접 WL의 추정 RC 조회
+ *   - get(bwl->counter, 9999):          존재하지 않는 인덱스 → 최소 빈도 반환
+ *
+ * ===== 반환값의 의미 =====
+ *
+ * Case 1: num이 해시 테이블에서 발견됨
+ *   → 해당 item의 frequency를 반환.
+ *   → 이 값은 실제 빈도 이상임이 보장됨 (Space-Saving 성질).
+ *
+ * Case 2: num이 해시 테이블에서 발견되지 않음
+ *   Subcase 2a: priority_queue가 비어있음 (카운터가 하나도 사용되지 않음)
+ *     → INT_MAX (2147483647) 반환.
+ *     → conv_ftl.c에서 "if (wl_read_cnt > get(bwl->counter, 9999))" 조건에서
+ *       이 경우 wl_read_cnt > INT_MAX는 항상 false → wl_read_cnt = 0 유지.
+ *
+ *   Subcase 2b: priority_queue에 item이 있음
+ *     → priority_queue head의 frequency (현재 최소 빈도) 반환.
+ *     → Space-Saving 보장: 추적되지 않는 원소의 실제 빈도 ≤ 현재 최소 빈도.
+ *     → 따라서 이 반환값은 num의 실제 빈도 이상 → 과소추정 없음, 안전.
+ *
+ * ===== STRAW에서의 활용 (논문 Figure 16) =====
+ *
+ * should_reclaim_wl_ss()에서의 ERC 계산:
+ *   RC[adj] = get(counter, oneshotpg-1) + get(counter, oneshotpg+1)
+ *   RC[non-adj] = RC[BLK] - RC[adj] - RC[WL]
+ *   ERC[WLi] = α × RC[adj] + RC[non-adj]
+ *
+ * get()이 과대추정하면 adj_read_cnt가 증가 → total_stress가 증가
+ * → ERCMAX를 더 빨리 초과 → premature RR 발생 (안전한 방향의 오류)
+ */
+int get(SpaceSaving *ss, int num) {
+	struct item *item = NULL;
+
+	/* 해시 테이블에서 num을 검색 */
+	hash_for_each_possible(ss->counter, item, hnode, num) {
+		if (item->num == num) {
+			return item->frequency;  /* 추적 중인 WL → 추정 빈도 반환 */
+		}
+	}
+
+	/* num이 추적되지 않는 경우 */
+
+	/* priority_queue가 비어있으면 → 아직 아무 읽기도 없었음 → 매우 큰 값 반환 */
+	if (list_empty(&ss->priority_queue))
+		return 2147483647;  /* INT_MAX: conv_ftl.c에서 비교 시 조건 불성립용 */
+
+	/*
+	 * priority_queue가 비어있지 않으면 → 최소 빈도를 반환.
+	 * Space-Saving 보장: 추적되지 않는 원소의 실제 빈도 ≤ 이 최소 빈도.
+	 */
+	item = list_first_entry(&ss->priority_queue, struct item, entry);
+	return item->frequency;
+}
+
+/*
+ * erase: 특정 WL의 카운터 엔트리를 해시 테이블에서 삭제하고
+ *        item을 pool(미사용 풀)로 반환한다.
+ *
+ * @ss:  SpaceSaving 인스턴스
+ * @num: 삭제할 WL 인덱스
+ *
+ * 동작:
+ *   1) 해시 테이블에서 num을 검색
+ *   2) 발견하면:
+ *      - 해시 테이블에서 hnode 제거 (hash_del)
+ *      - priority_queue에서 pool로 item 이동 (list_move)
+ *   3) 발견하지 못하면: 아무 동작도 하지 않음
+ *
+ * 현재 conv_ftl.c에서는 직접 호출되지 않지만,
+ * 향후 WL-level erase나 선택적 카운터 관리에 사용될 수 있다.
+ */
+void erase(SpaceSaving *ss, int num) {
+	struct item *item;
+	hash_for_each_possible(ss->counter, item, hnode, num) {
+		if (item->num == num) {
+			hash_del(&item->hnode);                   /* 해시에서 제거 */
+			list_move(&item->entry, &ss->pool);       /* pool로 반환 */
+			return;
+		}
+	}
+}
+
+/*
+ * invalidate: 특정 WL의 빈도를 현재 최소값으로 낮추고,
+ *             priority_queue의 head(최소 위치)로 이동시킨다.
+ *
+ * @ss:  SpaceSaving 인스턴스
+ * @num: 무효화할 WL 인덱스
+ *
+ * ===== conv_ftl.c에서의 사용 =====
+ *
+ * clean_ss()에서 호출:
+ *   SS 모드에서 RR 완료 후, 인접 WL이 모두 invalid인 WL에 대해 호출됨.
+ *
+ * 이유:
+ *   인접 WL이 모두 invalid이 되면, 해당 WL에 대한 read disturbance의
+ *   주된 원인(인접 WL의 VpassH)이 사라진다. 따라서 해당 WL의
+ *   축적된 stress를 "리셋"해야 하는데, 카운터를 삭제하면 정보 손실이 크므로,
+ *   대신 빈도를 현재 최소값으로 낮춰서 "가장 덜 위험한" 상태로 만든다.
+ *
+ * 동작:
+ *   1) 해시 테이블에서 num 검색
+ *   2) 발견하면:
+ *      - priority_queue head (최소 빈도 item)의 frequency를 복사
+ *      - item을 priority_queue head로 이동
+ *   3) 발견하지 못하면: 아무 동작도 하지 않음
+ *
+ * 효과:
+ *   해당 WL의 추정 빈도가 최소값으로 떨어지므로,
+ *   should_reclaim_wl_ss()에서 ERC 계산 시 adj_read_cnt가 작아져
+ *   해당 WL 주변의 total_stress가 감소 → premature RR 방지.
+ */
+void invalidate(SpaceSaving *ss, int num) {
+	struct item *item;
+	int cnt = 0;  /* 디버깅용 카운터 (해시 충돌 감지용, 실제 로직에 미사용) */
+
+	hash_for_each_possible(ss->counter, item, hnode, num) {
+		cnt++;
+		if (item->num == num) {
+			/*
+			 * priority_queue head = 현재 최소 빈도 item.
+			 * 해당 item의 frequency를 최소값으로 설정하여 "stress 리셋".
+			 */
+			struct item *min_item = list_first_entry(&ss->priority_queue,
+				struct item, entry);
+			item->frequency = min_item->frequency;
+
+			/*
+			 * item을 priority_queue의 head로 이동 (최소 빈도 위치).
+			 * 이미 head에 있으면 이동 불필요.
+			 */
+			if (list_is_first(&item->entry, &ss->priority_queue) == false)
+				list_move(&item->entry, &ss->priority_queue);
+			return;
+		}
+	}
+}
+
+/*
+ * reset: 모든 카운터를 초기 상태로 리셋한다.
+ *
+ * conv_ftl.c의 mark_block_free()에서 호출:
+ *   블록이 erase되면 모든 read disturbance가 사라지므로
+ *   해당 블록의 SS 카운터도 완전히 리셋해야 한다.
+ *
+ * 동작:
+ *   1) priority_queue의 모든 item을 pool로 일괄 이동
+ *      - list_splice_init: priority_queue의 모든 원소를 pool 앞에 합치고(splice),
+ *        priority_queue를 빈 리스트로 초기화(init).
+ *   2) 해시 테이블을 빈 상태로 초기화
+ *      - hash_init: 모든 버킷을 빈 상태로 설정.
+ *      - 주의: item의 hnode는 dangling 상태가 되지만,
+ *        item이 pool에 있는 동안은 해시 테이블에서 접근되지 않으므로 안전.
+ *        다음 add() 호출 시 hash_add로 다시 올바르게 연결됨.
+ *
+ * 리셋 후 상태 (createSpaceSaving 직후와 동일):
+ *   pool:            [item0] ↔ [item1] ↔ ... ↔ [itemK-1]
+ *   priority_queue:  (비어 있음)
+ *   hash table:      (비어 있음)
+ */
+void reset(SpaceSaving *ss) {
+	/*
+	 * priority_queue의 모든 원소를 pool의 앞에 합친다.
+	 * 이후 priority_queue는 빈 리스트가 된다.
+	 */
+	list_splice_init(&ss->priority_queue, &ss->pool);
+
+	/* 해시 테이블의 모든 버킷을 빈 상태로 초기화 */
+	hash_init(ss->counter);
+}
+
+/*
+ * printCounter: 디버깅용 함수. priority_queue의 모든 item을 출력한다.
+ *
+ * frequency 오름차순으로 출력되며, 각 item의 WL 인덱스(num)와
+ * 추정 빈도(frequency)를 커널 로그에 기록한다.
+ *
+ * 사용 예: printk로 출력되므로 dmesg로 확인 가능.
+ */
+void printCounter(SpaceSaving *ss) {
+	struct item *item;
+	list_for_each_entry(item, &ss->priority_queue, entry) {
+		printk("Item: %d, Frequency: %d\n", item->num, item->frequency);
+	}
+}
+
+/*
+ * freeSpaceSaving: SpaceSaving 인스턴스 및 모든 item의 메모리를 해제한다.
+ *
+ * conv_ftl.c의 remove_wordlines()에서 블록마다 호출:
+ *   freeSpaceSaving(wlm->blk_wordlines[ch][lun][blk].counter);
+ *
+ * 동작:
+ *   1) priority_queue의 모든 item을 순회하며:
+ *      - 리스트에서 제거 (list_del)
+ *      - 해시 테이블에서 제거 (hash_del)
+ *      - 메모리 해제 (vfree)
+ *   2) pool의 모든 item을 순회하며:
+ *      - 리스트에서 제거 (list_del)
+ *      - 메모리 해제 (vfree)
+ *      - (pool의 item은 해시에 등록되어 있지 않으므로 hash_del 불필요)
+ *   3) SpaceSaving 구조체 자체를 해제 (vfree)
+ *
+ * list_for_each_entry_safe: 순회 중 현재 원소를 안전하게 삭제할 수 있는 매크로.
+ * (일반 list_for_each_entry는 삭제 시 next 포인터가 깨지므로 사용 불가)
+ */
+void freeSpaceSaving(SpaceSaving *ss) {
+	struct item *item, *tmp;
+
+	/* priority_queue의 모든 사용 중인 item 해제 */
+	list_for_each_entry_safe(item, tmp, &ss->priority_queue, entry) {
+		list_del(&item->entry);    /* 리스트에서 제거 */
+		hash_del(&item->hnode);    /* 해시 테이블에서 제거 */
+		vfree(item);               /* 메모리 해제 */
+	}
+
+	/* pool의 모든 미사용 item 해제 */
+	list_for_each_entry_safe(item, tmp, &ss->pool, entry) {
+		list_del(&item->entry);    /* 리스트에서 제거 */
+		vfree(item);               /* 메모리 해제 */
+	}
+
+	/* SpaceSaving 구조체 자체 해제 */
+	vfree(ss);
+}
